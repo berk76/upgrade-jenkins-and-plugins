@@ -11,23 +11,53 @@ fi
 
 plugin_list=$1
 plugin_dir=$2
-
-#file_owner=jenkins.jenkins
+last_dwl_file="$plugin_dir/last_dwl.txt"
 
 mkdir -p $plugin_dir
 
+###########################################
+# function: version 
+# usage: version $ver
+###########################################
+version() { 
+  echo "$@" | awk -F. '{ printf("%d%03d%03d%03d\n", $1,$2,$3,$4); }'; 
+}
+
+###########################################
+# function: downloadPlugin
+# usage: downloadPlugin $plugin $version
+###########################################
+downloadPlugin() {
+  echo "Downloading: $1 $2"
+  curl -L --output ${plugin_dir}/${1}.hpi  ${UPDATES_URL}/${1}/${2}/${1}.hpi
+  echo "${1}.hpi" > $last_dwl_file
+  return 0
+}
+
+###########################################
+# function: installPlugin
+# usage: installPlugin $plugin $version
+###########################################
 installPlugin() {
-  if [ -f ${plugin_dir}/${1}.hpi -o -f ${plugin_dir}/${1}.jpi ]; then
+  echo "------------------"
+  echo "Required:    $1 $2"
+  if [ -f ${plugin_dir}/${1}.hpi ] && [ "$2" != "latest" ]; then
     if [ "$2" == "1" ]; then
       return 1
     fi
-    echo "Skipped: $1 (already installed)"
-    return 0
+    ver=$( unzip -p ${plugin_dir}/${1}.hpi META-INF/MANIFEST.MF|tr -d '\r' | sed -e ':a;N;$!ba;s/\n //g' | grep -e 'Plugin-Version' | awk '{print $2}' | tr "," "\n" | grep -v 'resolution:=optional')
+    if [ $(version $ver) -ge $(version $2) ]; then
+      echo "Skipped:     $1 $ver (already installed)"
+      return 0
+    else
+      echo "Installed:   $1 $ver"
+    fi
   else
-    echo "Installing: $1"
-    curl -L --silent --output ${plugin_dir}/${1}.hpi  ${UPDATES_URL}/${1}/${2}/${1}.hpi
-    return 0
+    echo "Not installed"
   fi
+  downloadPlugin $1 $2
+  changed=1
+  return 0
 }
 
 while IFS="|" read plugin version
@@ -54,22 +84,26 @@ while [ "$changed"  == "1" ]; do
   ((maxloops--))
   changed=0
   for f in ${plugin_dir}/*.hpi ; do
+    echo
+    echo "*** Dependencies for $f (iteration $(expr 100 - $maxloops))***"
+    echo
     # get a list of only non-optional dependencies
-    deps=$( unzip -p ${f} META-INF/MANIFEST.MF|tr -d '\r' | sed -e ':a;N;$!ba;s/\n //g' | grep -e 'Plugin-Dependencies' | awk '{print $2}' | tr "," "\n" | grep -v 'resolution:=optional')
+    deps=$( unzip -p ${f} META-INF/MANIFEST.MF|tr -d '\r' | sed -e ':a;N;$!ba;s/\n //g' | grep -e 'Plugin-Dependencies' | awk '{print $2}')
     
     #if deps were found, install them .. then set changed, so we re-loop all over all xpi's 
+    if [ -f $last_dwl_file ]; then
+      rm $last_dwl_file
+    fi
     if [[ ! -z $deps ]]; then
-       echo $deps | tr ' ' '\n' | 
-       while IFS=: read plugin version; do
-          installPlugin $plugin $version
-       done
-       changed=1
+      echo $deps | tr "," "\n" | grep -v 'resolution:=optional' | tr ' ' '\n' | 
+      while IFS=: read plugin version; do
+        installPlugin $plugin $version
+      done
+    fi
+    if [ -f $last_dwl_file ]; then
+      changed=1
     fi
   done
 done
 
-#echo "fixing permissions"
-
-#chown ${file_owner} ${plugin_dir} -R
-
-echo "all done"
+echo "!!! all done !!!"
